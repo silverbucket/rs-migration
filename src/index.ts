@@ -76,6 +76,31 @@ export function createMigrator(options?: MigratorOptions): Migrator {
   }
 
   function registerAll(migrations: MigrationDescriptor[]): void {
+    // Pre-validate the entire batch before mutating the registry
+    for (const m of migrations) {
+      const { version, collection } = m;
+      if (!Number.isInteger(version) || version < 1) {
+        throw new Error(
+          `Migration version must be a positive integer, got ${version}`,
+        );
+      }
+      const existing = registry.get(collection) ?? [];
+      if (existing.some((e) => e.version === version)) {
+        throw new Error(
+          `Duplicate migration version ${version} for collection "${collection}"`,
+        );
+      }
+      // Check for duplicates within the batch itself
+      const dupeInBatch = migrations.filter(
+        (other) => other !== m && other.collection === collection && other.version === version,
+      );
+      if (dupeInBatch.length > 0) {
+        throw new Error(
+          `Duplicate migration version ${version} for collection "${collection}"`,
+        );
+      }
+    }
+    // All valid — commit to registry
     for (const m of migrations) {
       register(m);
     }
@@ -104,18 +129,20 @@ export function createMigrator(options?: MigratorOptions): Migrator {
     const docs = await adapter.getAll();
     const results: MigrateResult[] = [];
 
+    const migrations = getMigrations(collection);
     for (const [key, doc] of Object.entries(docs)) {
       if (!doc || typeof doc !== "object") continue;
       const fromVersion: number = doc[versionField] ?? 0;
       const migrated = migrateDocument(collection, doc);
       if (migrated !== doc) {
         await adapter.save(key, migrated);
+        const applied = migrations.filter((m) => m.version > fromVersion).length;
         results.push({
           key,
           doc: migrated,
           fromVersion,
           toVersion: migrated[versionField] ?? 0,
-          migrationsApplied: migrated[versionField] - fromVersion,
+          migrationsApplied: applied,
         });
       }
     }
@@ -128,31 +155,46 @@ export function createMigrator(options?: MigratorOptions): Migrator {
     key: string,
     opts?: MigrateLocalStorageOptions,
   ): void {
+    if (typeof localStorage === "undefined") return;
+
     const raw = localStorage.getItem(key);
     if (raw === null) return;
 
-    const parsed = JSON.parse(raw);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Failed to parse localStorage key "${key}" for collection "${collection}": invalid JSON`,
+      );
+    }
 
     if (opts?.isArray) {
-      const migrated = (parsed as any[]).map((item) =>
-        migrateDocument(collection, item),
-      );
-      localStorage.setItem(key, JSON.stringify(migrated));
+      const items = parsed as any[];
+      const migrated = items.map((item) => migrateDocument(collection, item));
+      const changed = migrated.some((doc, i) => doc !== items[i]);
+      if (changed) {
+        localStorage.setItem(key, JSON.stringify(migrated));
+      }
     } else {
       const migrated = migrateDocument(collection, parsed);
-      localStorage.setItem(key, JSON.stringify(migrated));
+      if (migrated !== parsed) {
+        localStorage.setItem(key, JSON.stringify(migrated));
+      }
     }
   }
 
   function getPending(collection: string, docs: any[]): PendingInfo[] {
     const migrations = getMigrations(collection);
-    return docs.map((doc) => {
-      const currentVersion: number = doc[versionField] ?? 0;
-      const pendingMigrations = migrations.filter(
-        (m) => m.version > currentVersion,
-      );
-      return { doc, currentVersion, pendingMigrations };
-    });
+    return docs
+      .filter((doc) => doc != null && typeof doc === "object")
+      .map((doc) => {
+        const currentVersion: number = doc[versionField] ?? 0;
+        const pendingMigrations = migrations.filter(
+          (m) => m.version > currentVersion,
+        );
+        return { doc, currentVersion, pendingMigrations };
+      });
   }
 
   function getLatestVersion(collection: string): number {

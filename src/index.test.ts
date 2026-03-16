@@ -120,6 +120,36 @@ describe("registerAll", () => {
       ]),
     ).toThrow(/Duplicate/);
   });
+
+  it("is atomic — failed batch leaves registry unchanged", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "songs",
+      description: "existing",
+      transform: (d: any) => d,
+    });
+
+    expect(() =>
+      m.registerAll([
+        {
+          version: 2,
+          collection: "songs",
+          description: "new",
+          transform: (d: any) => d,
+        },
+        {
+          version: 1,
+          collection: "songs",
+          description: "conflicts with existing",
+          transform: (d: any) => d,
+        },
+      ]),
+    ).toThrow(/Duplicate/);
+
+    // version 2 should NOT have been registered
+    expect(m.getLatestVersion("songs")).toBe(1);
+  });
 });
 
 describe("migrateDocument", () => {
@@ -286,6 +316,38 @@ describe("migrateAll", () => {
     expect(saved[0][0]).toBe("a");
   });
 
+  it("reports correct migrationsApplied with non-consecutive versions", async () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "items",
+      description: "a",
+      transform: (d: any) => ({ ...d, a: true }),
+    });
+    m.register({
+      version: 5,
+      collection: "items",
+      description: "b",
+      transform: (d: any) => ({ ...d, b: true }),
+    });
+    m.register({
+      version: 10,
+      collection: "items",
+      description: "c",
+      transform: (d: any) => ({ ...d, c: true }),
+    });
+
+    const results = await m.migrateAll("items", {
+      getAll: async () => ({ x: { name: "x" } }),
+      save: async () => {},
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].migrationsApplied).toBe(3); // 3 transforms, not 10
+    expect(results[0].fromVersion).toBe(0);
+    expect(results[0].toVersion).toBe(10);
+  });
+
   it("handles empty getAll result", async () => {
     const m = createMigrator();
     m.register({
@@ -351,6 +413,39 @@ describe("migrateLocalStorage", () => {
     expect(result[1].clean).toBe(true);
   });
 
+  it("skips write when documents are already current", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "config",
+      description: "a",
+      transform: (d: any) => ({ ...d, flag: true }),
+    });
+
+    const original = JSON.stringify({ name: "test", _migrateVersion: 1 });
+    storage["myConfig"] = original;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    m.migrateLocalStorage("config", "myConfig");
+
+    expect(setItemSpy).not.toHaveBeenCalled();
+    expect(storage["myConfig"]).toBe(original);
+  });
+
+  it("throws actionable error on invalid JSON", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "config",
+      description: "a",
+      transform: (d: any) => d,
+    });
+
+    storage["bad"] = "not json{";
+    expect(() => m.migrateLocalStorage("config", "bad")).toThrow(
+      /Failed to parse localStorage key "bad".*invalid JSON/,
+    );
+  });
+
   it("no-ops when key is missing", () => {
     const m = createMigrator();
     m.register({
@@ -366,6 +461,20 @@ describe("migrateLocalStorage", () => {
 });
 
 describe("getPending", () => {
+  it("skips null and undefined entries in docs array", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "items",
+      description: "a",
+      transform: (d: any) => d,
+    });
+
+    const pending = m.getPending("items", [null, undefined, { name: "valid" }]);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].currentVersion).toBe(0);
+  });
+
   it("returns pending migrations for docs at various versions", () => {
     const m = createMigrator();
     const mig1 = {
