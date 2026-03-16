@@ -19,30 +19,32 @@ const migrator = createMigrator();
 
 migrator.register({
   version: 1,
-  collection: 'songs',
-  description: 'Add default tempo',
+  collection: 'contacts',
+  description: 'Split full name into first/last',
   transform(doc) {
-    doc.tempo = doc.tempo ?? 120;
+    if (doc.name && !doc.firstName) {
+      const [first, ...rest] = doc.name.split(' ');
+      doc.firstName = first;
+      doc.lastName = rest.join(' ');
+      delete doc.name;
+    }
     return doc;
   },
 });
 
 migrator.register({
   version: 2,
-  collection: 'songs',
-  description: 'Rename bpm to tempo',
+  collection: 'contacts',
+  description: 'Add default country',
   transform(doc) {
-    if (doc.bpm) {
-      doc.tempo = doc.bpm;
-      delete doc.bpm;
-    }
+    doc.country = doc.country ?? 'US';
     return doc;
   },
 });
 
 // Migrate a single document (lazy, on read)
-const song = migrator.migrateDocument('songs', rawSong);
-// song._migrateVersion === 2
+const contact = migrator.migrateDocument('contacts', rawContact);
+// contact._migrateVersion === 2
 ```
 
 ## How it works
@@ -77,10 +79,13 @@ Register a single migration. Throws if the version is already registered for tha
 ```js
 migrator.register({
   version: 1,
-  collection: 'songs',
-  description: 'Normalize key format',
+  collection: 'contacts',
+  description: 'Add email array',
   transform(doc) {
-    doc.key = doc.key?.toUpperCase() ?? 'C';
+    if (doc.email && !doc.emails) {
+      doc.emails = [doc.email];
+      delete doc.email;
+    }
     return doc;
   },
 });
@@ -91,7 +96,7 @@ migrator.register({
 | Field | Type | Description |
 |-------|------|-------------|
 | `version` | `number` | Positive integer. The version this migration produces. |
-| `collection` | `string` | Scoping label (e.g. `"songs"`, `"config"`) |
+| `collection` | `string` | Scoping label (e.g. `"contacts"`, `"settings"`) |
 | `description` | `string` | Human-readable, for logging or debugging |
 | `transform` | `(doc) => doc` | Receives a deep clone, returns the transformed document |
 
@@ -103,8 +108,8 @@ Register multiple migrations at once. Same rules as `register` — duplicates th
 
 ```js
 migrator.registerAll([
-  { version: 1, collection: 'songs', description: '...', transform: (d) => d },
-  { version: 2, collection: 'songs', description: '...', transform: (d) => d },
+  { version: 1, collection: 'contacts', description: '...', transform: (d) => d },
+  { version: 2, collection: 'contacts', description: '...', transform: (d) => d },
 ]);
 ```
 
@@ -115,7 +120,7 @@ migrator.registerAll([
 Run pending migrations on a single document. Returns the original reference if already current.
 
 ```js
-const song = migrator.migrateDocument('songs', rawSong);
+const contact = migrator.migrateDocument('contacts', rawContact);
 ```
 
 - Documents without a version field are treated as version 0.
@@ -129,9 +134,9 @@ const song = migrator.migrateDocument('songs', rawSong);
 Eagerly migrate all documents in a collection. Calls `save` only for documents that actually changed.
 
 ```js
-const results = await migrator.migrateAll('songs', {
-  getAll: () => client.getAll('songs/', false),
-  save: (key, doc) => client.storeObject('song', `songs/${key}`, doc),
+const results = await migrator.migrateAll('contacts', {
+  getAll: () => client.getAll('contacts/'),
+  save: (key, doc) => client.storeObject('contact', `contacts/${key}`, doc),
 });
 
 console.log(`Migrated ${results.length} documents`);
@@ -162,10 +167,10 @@ Read a JSON value from `localStorage`, migrate it, and write it back.
 
 ```js
 // Single object
-migrator.migrateLocalStorage('config', 'app-config');
+migrator.migrateLocalStorage('settings', 'app-settings');
 
 // Array of documents
-migrator.migrateLocalStorage('savedSetlists', 'saved-sets', { isArray: true });
+migrator.migrateLocalStorage('bookmarks', 'saved-bookmarks', { isArray: true });
 ```
 
 No-ops if the key doesn't exist in localStorage.
@@ -181,7 +186,7 @@ No-ops if the key doesn't exist in localStorage.
 Check which migrations are outstanding for a set of documents.
 
 ```js
-const pending = migrator.getPending('songs', allSongs);
+const pending = migrator.getPending('contacts', allContacts);
 for (const info of pending) {
   if (info.pendingMigrations.length > 0) {
     console.log(`Doc at v${info.currentVersion} needs ${info.pendingMigrations.length} migrations`);
@@ -204,77 +209,84 @@ for (const info of pending) {
 Returns the highest registered version for a collection, or `0` if none are registered.
 
 ```js
-migrator.getLatestVersion('songs'); // 2
+migrator.getLatestVersion('contacts'); // 2
 migrator.getLatestVersion('unknown'); // 0
 ```
 
-## Real-world example
+## Putting it together
 
-A remoteStorage app with songs and config collections, plus saved setlists in localStorage:
+A typical setup: define migrations in one file, use them in your data layer.
+
+**`migrations.js`** — register all migrations up front:
 
 ```js
 import { createMigrator } from 'rs-migrate';
 
-export const migrator = createMigrator({ versionField: 'schemaVersion' });
+export const migrator = createMigrator();
 
-// --- songs ---
-migrator.register({
-  version: 2,
-  collection: 'songs',
-  description: 'Convert picking from boolean to array',
-  transform(doc) {
-    for (const member of Object.values(doc.members || {})) {
-      for (const inst of member.instruments || []) {
-        if (!Array.isArray(inst.picking)) inst.picking = [];
-      }
-    }
-    return doc;
-  },
-});
-
-// --- config ---
-migrator.register({
-  version: 2,
-  collection: 'config',
-  description: 'Strip deprecated energy fields',
-  transform(doc) {
-    const w = doc.general?.weighting;
-    if (w) {
-      delete w.energyTarget;
-      delete w.repeatEnergy;
-    }
-    return doc;
-  },
-});
-
-// --- savedSetlists (localStorage) ---
+// --- contacts ---
 migrator.register({
   version: 1,
-  collection: 'savedSetlists',
-  description: 'Remove energy from saved setlists',
+  collection: 'contacts',
+  description: 'Split name into first/last',
   transform(doc) {
-    doc.songs = (doc.songs || []).map(({ energy, ...rest }) => rest);
+    if (doc.name && !doc.firstName) {
+      const [first, ...rest] = doc.name.split(' ');
+      doc.firstName = first;
+      doc.lastName = rest.join(' ');
+      delete doc.name;
+    }
+    return doc;
+  },
+});
+
+migrator.register({
+  version: 2,
+  collection: 'contacts',
+  description: 'Normalize email to array',
+  transform(doc) {
+    if (typeof doc.email === 'string') {
+      doc.emails = [doc.email];
+      delete doc.email;
+    }
+    return doc;
+  },
+});
+
+// --- settings ---
+migrator.register({
+  version: 1,
+  collection: 'settings',
+  description: 'Remove deprecated theme options',
+  transform(doc) {
+    delete doc.legacyTheme;
+    delete doc.useOldLayout;
     return doc;
   },
 });
 ```
 
-Then in your app's data layer:
+**`data.js`** — use the migrator when loading data:
 
 ```js
-// Lazy: migrate on read
-function loadSong(raw) {
-  return migrator.migrateDocument('songs', raw);
+import { migrator } from './migrations.js';
+
+// Lazy: migrate each document on read
+function loadContact(raw) {
+  return migrator.migrateDocument('contacts', raw);
 }
 
-// Eager: migrate everything after sync
-await migrator.migrateAll('songs', {
-  getAll: () => client.getAll('songs/', false),
-  save: (key, doc) => client.storeObject('song', `songs/${key}`, doc),
-});
+// Eager: migrate all documents after sync
+async function migrateAllContacts(client) {
+  const results = await migrator.migrateAll('contacts', {
+    getAll: () => client.getAll('contacts/'),
+    save: (key, doc) => client.storeObject('contact', `contacts/${key}`, doc),
+  });
+  console.log(`Migrated ${results.length} contacts`);
+}
 
-// localStorage
-migrator.migrateLocalStorage('savedSetlists', 'saved-sets', { isArray: true });
+// localStorage: migrate cached data in place
+migrator.migrateLocalStorage('bookmarks', 'saved-bookmarks', { isArray: true });
 ```
 
 ## License
