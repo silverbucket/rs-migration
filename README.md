@@ -104,7 +104,7 @@ migrator.register({
 
 ### `migrator.registerAll(migrations)`
 
-Register multiple migrations at once. Same rules as `register` — duplicates throw.
+Register multiple migrations at once. The operation is atomic — if any migration in the batch is invalid (duplicate version, non-positive integer), none are registered. Same validation rules as `register`.
 
 ```js
 migrator.registerAll([
@@ -173,7 +173,7 @@ migrator.migrateLocalStorage('settings', 'app-settings');
 migrator.migrateLocalStorage('bookmarks', 'saved-bookmarks', { isArray: true });
 ```
 
-No-ops if the key doesn't exist in localStorage.
+No-ops if the key doesn't exist in localStorage or if `localStorage` is unavailable (e.g. Node.js). Throws an actionable error if the stored value is not valid JSON. Skips the write if no documents actually changed.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -183,7 +183,7 @@ No-ops if the key doesn't exist in localStorage.
 
 ### `migrator.getPending(collection, docs)`
 
-Check which migrations are outstanding for a set of documents.
+Check which migrations are outstanding for a set of documents. Null and undefined entries in the array are silently skipped.
 
 ```js
 const pending = migrator.getPending('contacts', allContacts);
@@ -291,4 +291,4 @@ migrator.migrateLocalStorage('bookmarks', 'saved-bookmarks', { isArray: true });
 
 ## License
 
-GPL-3.0
+GPL-3.0-only
