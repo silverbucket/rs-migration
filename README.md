@@ -291,4 +291,4 @@ migrator.migrateLocalStorage('bookmarks', 'saved-bookmarks', { isArray: true });
 
 ## License
 
-GPL-3.0-only
+MIT
