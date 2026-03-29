@@ -1,6 +1,6 @@
 {
   "name": "rs-migrate",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A migration tool for remote storage data modules",
   "type": "module",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "license": "GPL-3.0-only",
+  "license": "MIT",
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
