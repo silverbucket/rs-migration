@@ -363,6 +363,96 @@ describe("migrateAll", () => {
     });
     expect(results).toHaveLength(0);
   });
+
+  it("does not save when a pure no-op transform leaves doc content unchanged", async () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "items",
+      description: "real change",
+      transform: (d: any) => ({ ...d, a: true }),
+    });
+    m.register({
+      version: 2,
+      collection: "items",
+      description: "no-op version bump",
+      transform: (d: any) => d,
+    });
+
+    const saved: Array<[string, any]> = [];
+    const results = await m.migrateAll("items", {
+      // doc already has the v1 change applied and is at v1; only the v2
+      // no-op is pending. Without the content gate this would re-save.
+      getAll: async () => ({
+        x: { name: "x", a: true, _migrateVersion: 1 },
+      }),
+      save: async (key, doc) => {
+        saved.push([key, doc]);
+      },
+    });
+
+    expect(saved).toHaveLength(0);
+    expect(results).toHaveLength(0);
+  });
+
+  it("does not save unversioned doc when only no-op transforms are registered", async () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "items",
+      description: "no-op",
+      transform: (d: any) => d,
+    });
+
+    const saved: Array<[string, any]> = [];
+    const results = await m.migrateAll("items", {
+      getAll: async () => ({ x: { name: "x" } }),
+      save: async (key, doc) => {
+        saved.push([key, doc]);
+      },
+    });
+
+    expect(saved).toHaveLength(0);
+    expect(results).toHaveLength(0);
+  });
+
+  it("saves only docs whose content actually changes in a mixed batch", async () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "items",
+      description: "no-op",
+      transform: (d: any) => d,
+    });
+    m.register({
+      version: 2,
+      collection: "items",
+      description: "add flag",
+      transform: (d: any) => ({ ...d, flagged: true }),
+    });
+
+    const saved: Array<[string, any]> = [];
+    const results = await m.migrateAll("items", {
+      getAll: async () => ({
+        // unversioned: v1 no-op and v2 real change both apply -> save
+        a: { name: "a" },
+        // already at v2: nothing pending -> reference short-circuit, no save
+        b: { name: "b", flagged: true, _migrateVersion: 2 },
+        // at v1 with the v2 change already present from a manual edit;
+        // only the v2 transform is pending and it's a no-op given current
+        // content -> content-diff gate skips save
+        c: { name: "c", flagged: true, _migrateVersion: 1 },
+      }),
+      save: async (key, doc) => {
+        saved.push([key, doc]);
+      },
+    });
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0][0]).toBe("a");
+    expect(results).toHaveLength(1);
+    expect(results[0].key).toBe("a");
+  });
 });
 
 describe("migrateLocalStorage", () => {
@@ -457,6 +547,42 @@ describe("migrateLocalStorage", () => {
 
     m.migrateLocalStorage("config", "nonexistent");
     expect(storage["nonexistent"]).toBeUndefined();
+  });
+
+  it("does not setItem when single object's transforms produce no content change", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "config",
+      description: "no-op",
+      transform: (d: any) => d,
+    });
+
+    const original = JSON.stringify({ name: "test" });
+    storage["myConfig"] = original;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    m.migrateLocalStorage("config", "myConfig");
+
+    expect(setItemSpy).not.toHaveBeenCalled();
+    expect(storage["myConfig"]).toBe(original);
+  });
+
+  it("does not setItem when array's transforms produce no content change", () => {
+    const m = createMigrator();
+    m.register({
+      version: 1,
+      collection: "setlists",
+      description: "no-op",
+      transform: (d: any) => d,
+    });
+
+    const original = JSON.stringify([{ name: "a" }, { name: "b" }]);
+    storage["sets"] = original;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    m.migrateLocalStorage("setlists", "sets", { isArray: true });
+
+    expect(setItemSpy).not.toHaveBeenCalled();
+    expect(storage["sets"]).toBe(original);
   });
 });
 
