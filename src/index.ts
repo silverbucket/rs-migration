@@ -57,6 +57,26 @@ export function createMigrator(options?: MigratorOptions): Migrator {
     return registry.get(collection) ?? [];
   }
 
+  // Compares two docs for content equality, ignoring the version field.
+  // Used to detect when registered transforms produce no real change
+  // (e.g. a no-op `(d) => d` registered solely to bump the schema version
+  // after a backwards-compatible field addition). Without this gate,
+  // every doc behind the latest version would be re-saved on migrateAll
+  // because `migrateDocument` always returns a fresh structuredClone.
+  //
+  // JSON-stringify is appropriate here: the persisted form *is* JSON
+  // (both MigrateAllAdapter consumers like remoteStorage and localStorage
+  // serialize on save), so JSON-equality matches storage-equality.
+  function stripVersion(doc: any): any {
+    if (!doc || typeof doc !== "object") return doc;
+    const { [versionField]: _v, ...rest } = doc;
+    return rest;
+  }
+
+  function contentDiffers(a: any, b: any): boolean {
+    return JSON.stringify(stripVersion(a)) !== JSON.stringify(stripVersion(b));
+  }
+
   function register(migration: MigrationDescriptor): void {
     const { version, collection } = migration;
     if (!Number.isInteger(version) || version < 1) {
@@ -134,17 +154,17 @@ export function createMigrator(options?: MigratorOptions): Migrator {
       if (!doc || typeof doc !== "object") continue;
       const fromVersion: number = doc[versionField] ?? 0;
       const migrated = migrateDocument(collection, doc);
-      if (migrated !== doc) {
-        await adapter.save(key, migrated);
-        const applied = migrations.filter((m) => m.version > fromVersion).length;
-        results.push({
-          key,
-          doc: migrated,
-          fromVersion,
-          toVersion: migrated[versionField] ?? 0,
-          migrationsApplied: applied,
-        });
-      }
+      if (migrated === doc) continue; // no pending migrations
+      if (!contentDiffers(doc, migrated)) continue; // pending but no real change
+      await adapter.save(key, migrated);
+      const applied = migrations.filter((m) => m.version > fromVersion).length;
+      results.push({
+        key,
+        doc: migrated,
+        fromVersion,
+        toVersion: migrated[versionField] ?? 0,
+        migrationsApplied: applied,
+      });
     }
 
     return results;
@@ -172,13 +192,15 @@ export function createMigrator(options?: MigratorOptions): Migrator {
     if (opts?.isArray) {
       const items = parsed as any[];
       const migrated = items.map((item) => migrateDocument(collection, item));
-      const changed = migrated.some((doc, i) => doc !== items[i]);
+      const changed = migrated.some(
+        (doc, i) => doc !== items[i] && contentDiffers(items[i], doc),
+      );
       if (changed) {
         localStorage.setItem(key, JSON.stringify(migrated));
       }
     } else {
       const migrated = migrateDocument(collection, parsed);
-      if (migrated !== parsed) {
+      if (migrated !== parsed && contentDiffers(parsed, migrated)) {
         localStorage.setItem(key, JSON.stringify(migrated));
       }
     }
