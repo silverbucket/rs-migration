@@ -1,6 +1,6 @@
 {
   "name": "rs-migrate",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A migration tool for remote storage data modules",
   "type": "module",
   "main": "dist/index.js",
